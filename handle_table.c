@@ -161,6 +161,14 @@ int lookup_num(handle_table *h_table, int socket_num) {
     return -1; 
 }
 
+int get_num_handles(handle_table *h_table) {
+    return h_table->size;
+}
+
+char *get_handle_by_index(handle_table *h_table, int index) {
+    return h_table->entries[index].handle_name;
+}
+
 void print_handle_table(handle_table *h_table) {
     int i = 0; 
     for (i = 0; i < h_table->size; i++) {

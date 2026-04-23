@@ -29,6 +29,7 @@
 
 #define MAXBUF 1024
 #define MAXMSG 1400
+#define MAX_HANDLE_LEN 101
 #define DEBUG_FLAG 1
 
 void sendToServer(int socketNum);
@@ -41,6 +42,10 @@ int createMessagePacket(uint8_t *buffer, char *sender, char *destination, char *
 int parseMessagePacket(uint8_t *packet);
 int processMulticast(int socketNum, uint8_t *buffer, char *handle_name);
 int createMulticastPacket(uint8_t *buffer, int num_handles, char *sender, char *destination[], char *txt_msg);
+int parseMulticastPacket(uint8_t *packet);
+int processListHandles(int socketNum, uint8_t *buffer, char *handle_name);
+void printNumHandles(uint8_t *packet);
+void printHandleNames(uint8_t *packet);
 
 int main(int argc, char * argv[])
 {
@@ -92,6 +97,9 @@ int clientControl(int socketNum, char *handle_name) {
 				//send a message to multiple handles
 				processMulticast(socketNum, buffer, handle_name); 
 			}
+			else if (buffer[0] == '%' && (buffer[1] == 'L' || buffer[1] == 'l')) {
+				processListHandles(socketNum, buffer, handle_name);
+			}
 			
 			printf("$: ");
 			fflush(stdout); 
@@ -112,13 +120,22 @@ int clientControl(int socketNum, char *handle_name) {
 				int flag = dataBuffer[0]; 
 				if (flag == 5) {
 					parseMessagePacket(dataBuffer); 
+					printf("$: ");
+					fflush(stdout); 
 				}
 				else if (flag == 6) {
-					printf("got something\n");
+					parseMulticastPacket(dataBuffer);
+					printf("$: ");
+					fflush(stdout); 
+				}
+				else if (flag == 11) {
+					printNumHandles(dataBuffer);
+				}
+				else if (flag == 12) {
+					printHandleNames(dataBuffer);
 				}
 
-				printf("$: ");
-				fflush(stdout); 
+
 			}
 			else {
 				printf("Server terminated\n");
@@ -128,6 +145,85 @@ int clientControl(int socketNum, char *handle_name) {
 		}
 	}
 
+	return 0; 
+}
+
+void printHandleNames(uint8_t *packet) {
+
+	//skip the flag byte
+	int index = 1; 
+
+	int handle_len = packet[index++];
+
+	uint8_t handle_name[MAX_HANDLE_LEN];
+	memcpy(&handle_name, packet + index, handle_len);
+	handle_name[handle_len] = '\0';
+
+	printf("\t%s\n", handle_name);
+}
+
+void printNumHandles(uint8_t *packet) {
+	
+	//skip the flag byte
+	uint32_t num_handles = 0;
+	memcpy(&num_handles, packet + 1, 4);
+
+	//convert to host order
+	int num_handles_ho = ntohl(num_handles);
+
+	printf("\nNumber of clients: %d\n", num_handles_ho);
+	
+}
+
+int processListHandles(int socketNum, uint8_t *buffer, char *handle_name) {
+
+	//flag = 10 to tell server it wants a list of handles
+	buffer[0] = 10;  
+
+	//only the flag is needed in format to know what is being requested
+	int sent_bytes = sendPDU(socketNum, buffer, sizeof(buffer));
+	if (sent_bytes < 0) {
+		fprintf(stderr, "sendPDU for listing handles");
+		return -1;
+	}
+
+	return 0;
+}
+
+int parseMulticastPacket(uint8_t *packet) {
+	/**
+	 * Display the multicast text to appropriate clients
+	 */
+
+	//extract the fields similarly to how it was done by the client
+	int index = 1; 
+
+	//sending handle length
+	int sender_len = packet[index++];
+
+	//handle name of sending client
+	char sender_name[MAX_HANDLE_LEN];
+	memcpy(sender_name, packet + index, sender_len);
+	sender_name[sender_len] = '\0';
+	index += sender_len; 
+
+	//number of destination handles
+	int num_handles = packet[index++];
+
+	//need to find the index where text starts
+	int i = 0;
+	for (i = 0; i < num_handles; i++) {
+		int dest_len = packet[index++];
+		index += dest_len;
+	}
+
+	char *txt_message = (char *)(packet + index);
+	
+	//display  sent message
+	printf("\n%s: %s\n", sender_name, txt_message);
+
+	
+	 
 	return 0; 
 }
 

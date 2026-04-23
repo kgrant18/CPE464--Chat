@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <arpa/inet.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -29,6 +30,7 @@
 
 #define MAXBUF 1024
 #define MAXMSG 1400
+#define L_PACKET_LEN 5
 #define MAX_HANDLE_LEN 101
 #define DEBUG_FLAG 1
 
@@ -38,9 +40,11 @@ int receive_handle_name(int clientSocket, handle_table *h_table);
 int serverControl(int mainServerSocket, handle_table *h_table);
 void addNewSocket(int mainServerSocket, handle_table *h_table);
 void processClient(int clientSocket, handle_table *h_table);
-void callFunctionBasedOnFlag(uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag);
+void callFunctionBasedOnFlag(int clientSocket, uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag);
 int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table);
 int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table);
+int serverSendFlag11Packet(int clientSocket, uint8_t *flag11_packet, int num_handles);
+int serverSendFlag12Packet(int clientSocket, char *handle_name);
 
 int main(int argc, char *argv[])
 {
@@ -101,7 +105,7 @@ void processClient(int clientSocket, handle_table *h_table) {
 	if (messageLen > 0) {
 		//successful data read
 		int flag = dataBuffer[0];
-		callFunctionBasedOnFlag(dataBuffer, messageLen, h_table, flag);
+		callFunctionBasedOnFlag(clientSocket, dataBuffer, messageLen, h_table, flag);
 
 	}
 	else if (messageLen == 0) {
@@ -121,7 +125,7 @@ void processClient(int clientSocket, handle_table *h_table) {
 	}
 }
 
-void callFunctionBasedOnFlag(uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag) {
+void callFunctionBasedOnFlag(int clientSocket, uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag) {
 	if (flag == 5) {
 		//message from client
 		serverProcessMessage(dataBuffer, dataLen, h_table);
@@ -129,6 +133,63 @@ void callFunctionBasedOnFlag(uint8_t *dataBuffer, int dataLen, handle_table *h_t
 	else if (flag == 6) {
 		serverProcessMulticast(dataBuffer, dataLen, h_table);
 	}
+	else if (flag == 10) {
+		int num_handles = get_num_handles(h_table);
+		//server responds with flag = 11 packet
+
+		uint8_t flag11_packet[L_PACKET_LEN];
+		serverSendFlag11Packet(clientSocket, flag11_packet, num_handles); 
+
+		//server sends flag= 12 packet for each handle in table
+		int i = 0; 
+		for (i = 0; i < num_handles; i++) {
+			char *handle_name = get_handle_by_index(h_table, i);	
+			serverSendFlag12Packet(clientSocket, handle_name);
+		}
+	}
+}
+
+int serverSendFlag12Packet(int clientSocket, char *handle_name) {
+	uint8_t flag12_packet[MAXBUF];
+
+	//set flag = 12
+	flag12_packet[0] = 12;
+
+	//next byte is length of handle
+	flag12_packet[1] = strlen(handle_name);
+
+	//put name into buffer
+	memcpy(flag12_packet + 2, handle_name, strlen(handle_name));
+
+	int bytes_sent = sendPDU(clientSocket, flag12_packet, strlen(handle_name) + 2);
+	if (bytes_sent < 0) {
+		fprintf(stderr, "sendPDU for flag12 failed\n");
+		return -1;
+	}
+
+	return bytes_sent;	
+	
+}
+
+int serverSendFlag11Packet(int clientSocket, uint8_t *flag11_packet, int num_handles) {
+
+	//set flag = 11
+	flag11_packet[0] = 11; 
+
+	//convert to network order (32 bits)
+	uint32_t num_handles_no = htonl(num_handles);
+
+	//place after flag
+	memcpy(flag11_packet + 1, &num_handles_no, 4);
+
+	//send flag11 packet to client
+	int send_len = 0;
+	if ((send_len = sendPDU(clientSocket, flag11_packet, L_PACKET_LEN)) < 0) {
+		fprintf(stderr, "flag11 packet failed to send");
+		return -1;
+	}
+
+	return send_len;
 }
 
 int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table) {
