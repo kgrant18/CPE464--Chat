@@ -38,7 +38,9 @@ int sendHandleName(int socketNum, char *handle_name);
 int clientControl(int socketNum, char *handle_name);
 int processMessage(int socketNum, uint8_t *buffer, char *handle_name);
 int createMessagePacket(uint8_t *buffer, char *sender, char *destination, char *txt_message);
-void addFlagToBuf(uint8_t *buffer, int flag);
+int parseMessagePacket(uint8_t *packet);
+int processMulticast(int socketNum, uint8_t *buffer, char *handle_name);
+int createMulticastPacket(uint8_t *buffer, int num_handles, char *sender, char *destination[], char *txt_msg);
 
 int main(int argc, char * argv[])
 {
@@ -83,8 +85,12 @@ int clientControl(int socketNum, char *handle_name) {
 
 			sendLen = readFromStdin(buffer); 
 			if (buffer[0] == '%' && (buffer[1] == 'M' || buffer[1] == 'm')) {
-				//process message
+				//send message to one handle
 				processMessage(socketNum, buffer, handle_name); 
+			}
+			else if (buffer[0] == '%' && (buffer[1] == 'C' || buffer[1] == 'c')) {
+				//send a message to multiple handles
+				processMulticast(socketNum, buffer, handle_name); 
 			}
 			
 			printf("$: ");
@@ -92,15 +98,167 @@ int clientControl(int socketNum, char *handle_name) {
 
 		}
 
-		// else {
-		// 	//process message
-		// 	uint8_t dataBuffer[MAXBUF]; 
-		// 	int messageLen = 0; 
-		// }
+		else {
+			//process message
+			uint8_t dataBuffer[MAXBUF]; 
+			int messageLen = 0; 
+
+			if ((messageLen = recvPDU(socketNum, dataBuffer, MAXBUF)) < 0) {
+				perror("recv call");
+				exit(-1);
+			}
+			
+			if (messageLen > 0) {
+				int flag = dataBuffer[0]; 
+				if (flag == 5) {
+					parseMessagePacket(dataBuffer); 
+				}
+				else if (flag == 6) {
+					printf("got something\n");
+				}
+
+				printf("$: ");
+				fflush(stdout); 
+			}
+			else {
+				printf("Server terminated\n");
+				exit(1);
+			}
+
+		}
 	}
 
+	return 0; 
+}
 
+int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
+	//tokenize the buffer to extract destination handles and text message
+	char *command = strtok((char *)buffer, " ");
+	if (command == NULL) {
+		fprintf(stderr, "format: [cmd] [num_handles] [dest_handles] [txt_message]\n");
+		return -1; 
+	}
+
+	char *numHandles = strtok(NULL, " ");
+	if (numHandles == NULL) {
+		fprintf(stderr, "format: [cmd] [num_handles] [dest_handles] [txt_message]\n");
+		return -1; 
+	}
+
+	int num_handles = atoi(numHandles);
 	
+	//num handles is between 2 and 9
+	if (num_handles < 2 || num_handles > 9) {
+		fprintf(stderr, "number of handles must be between 2 and 9\n");
+		return -1; 
+	} 
+
+	//add destination handle names to buffer
+	char *dest_handles[num_handles];
+
+	int i = 0;
+	for (i = 0; i < num_handles; i++) {
+		dest_handles[i] = strtok(NULL, " ");
+		if (dest_handles[i] == NULL) {
+			fprintf(stderr, "number of handles must be between 2 and 9\n");
+			return -1;
+		}
+	}
+
+	//get text message
+	char *txt_message = strtok(NULL, ""); 
+	if (txt_message == NULL) {
+		fprintf(stderr, "format: [cmd] [num_handles] [dest_handles] [txt_message]\n");
+		return -1; 
+	}
+
+	//create multicast packet
+	uint8_t multiPacket[MAXBUF];
+	int num_bytes = 0;
+	if ((num_bytes = createMulticastPacket(multiPacket, num_handles, handle_name, dest_handles, txt_message)) < 0) {
+		fprintf(stderr, "multicast packet creation failed\n");
+		return -1; 
+	} 
+
+	//send multicast packet
+	int bytes_sent = 0; 
+	if ((bytes_sent = sendPDU(socketNum, multiPacket, num_bytes)) < 0) {
+		fprintf(stderr, "sendPDU failed for multicast packet\n");
+		return -1; 
+	}
+
+	return bytes_sent; 
+}
+
+int createMulticastPacket(uint8_t *buffer, int num_handles, char *sender, char *destination[], char *txt_msg) {
+	int index = 0; 
+
+	//flag = 6 for multicast
+	buffer[index++] = 6;
+
+	//next byte is length of sending client's handle
+	buffer[index++] = strlen(sender); 
+
+	//add sender handle name
+	memcpy(buffer + index, sender, strlen(sender)); 
+	index += strlen(sender); 
+
+	//1 byte for num of destination handles 
+	buffer[index++] = num_handles; 
+
+	//for each destination handle
+	int i = 0; 
+	for (i = 0; i < num_handles; i++) {
+		//1 byte for length of destination handle name
+		buffer[index++] = strlen(destination[i]);
+		//add destination handle name
+		memcpy(buffer + index, destination[i], strlen(destination[i]));
+		index += strlen(destination[i]); 
+
+	}
+
+	//add text message
+	memcpy(buffer + index, txt_msg, strlen(txt_msg) + 1);
+	index += (strlen(txt_msg) + 1);
+
+	return index; 
+}
+
+int parseMessagePacket(uint8_t *packet) {
+	/**
+	 * Display the text message sent from other client
+	 */
+
+	int index = 1; 
+
+	int sender_len = packet[index++];
+	
+	//get sender name and make a string
+	uint8_t sender_name[101];
+	memcpy(sender_name, packet + index, sender_len);
+	sender_name[sender_len] = '\0';
+	index += sender_len;
+
+	int one_client = packet[index++];
+	if (one_client != 1) {
+		fprintf(stderr, "%%M only accepts one destination\n");
+		return -1; 
+	}
+
+	int dest_len = packet[index++];
+
+	//get destination name and make a string
+	uint8_t dest_name[101];
+	memcpy(dest_name, packet + index, dest_len);
+	dest_name[dest_len] = '\0';
+	index += dest_len;
+
+	//now get the text msg
+	char *txt_message = (char *)(packet + index);
+    
+	//display  sent message
+	printf("\n%s: %s\n", sender_name, txt_message);
+
 	return 0; 
 }
 
@@ -172,13 +330,7 @@ int processMessage(int socketNum, uint8_t *buffer, char *handle_name) {
 		return -1; 
 	}
 
-	printf("message sent to client, bytes sent: %d\n", sent_bytes);
-
-	return 0; 
-}
-
-void addFlagToBuf(uint8_t *buffer, int flag) {
-	buffer[0] = flag;
+	return sent_bytes; 
 }
 
 int sendHandleName(int socketNum, char *handle_name) {
@@ -191,7 +343,7 @@ int sendHandleName(int socketNum, char *handle_name) {
 	}
 
 	//make flag = 1
-	addFlagToBuf(buffer, 1); 
+	buffer[0] = 1;
 	//1 byte handle length
 	buffer[1] = handleLen;
 	//rest is the data

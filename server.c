@@ -40,6 +40,7 @@ void addNewSocket(int mainServerSocket, handle_table *h_table);
 void processClient(int clientSocket, handle_table *h_table);
 void callFunctionBasedOnFlag(uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag);
 int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table);
+int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table);
 
 int main(int argc, char *argv[])
 {
@@ -108,6 +109,7 @@ void processClient(int clientSocket, handle_table *h_table) {
 		printf("Socket %d: Connection closed by other side\n", clientSocket);
 		removeFromPollSet(clientSocket);
 		remove_handle(h_table, clientSocket);
+		print_handle_table(h_table);
 		close(clientSocket);
 	}
 	else {
@@ -124,6 +126,60 @@ void callFunctionBasedOnFlag(uint8_t *dataBuffer, int dataLen, handle_table *h_t
 		//message from client
 		serverProcessMessage(dataBuffer, dataLen, h_table);
 	}
+	else if (flag == 6) {
+		serverProcessMulticast(dataBuffer, dataLen, h_table);
+	}
+}
+
+int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table) {
+	/**
+	 * extract the multicast fields and send to given clients
+	 */
+	
+	//start at index = 1 to bypass the flag in first byte
+	int index = 1; 
+
+	//sending handle length
+	int sender_len = packet[index++];
+
+	//handle name of sending client
+	char sender_name[MAX_HANDLE_LEN];
+	memcpy(sender_name, packet + index, sender_len);
+	sender_name[sender_len] = '\0';
+	index += sender_len; 
+
+	//number of destination handles
+	int num_handles = packet[index++];
+
+	//check destination names are valid and send if so
+	int i = 0;
+	for (i = 0; i < num_handles; i++) {
+		int dest_len = packet[index++];
+
+		char dest_handle[MAX_HANDLE_LEN];
+		memcpy(dest_handle, packet + index, dest_len);
+		dest_handle[dest_len] = '\0';
+		index += dest_len; 
+
+		int dest_index = lookup_name(h_table, dest_handle); 
+		if (dest_index < 0) {
+			int sender_index = lookup_name(h_table, sender_name);
+			if (sender_index >= 0) {
+				//send invalid message back to caller (flag 7)!!
+				return -1; 
+			}
+		}
+
+		//send message to each handle if valid
+		int dst_socket = h_table->entries[dest_index].socket_num;
+
+		if (sendPDU(dst_socket, packet, packetLen) < 0) {
+			fprintf(stderr, "message failed to send for multicast\n");
+			return -1; 
+		}
+	}
+
+	return 0; 
 }
 
 int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table) {
@@ -135,7 +191,7 @@ int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table) 
 	int sender_len = packet[index++];
 	
 	//get sender name and make a string
-	uint8_t sender_name[MAX_HANDLE_LEN];
+	char sender_name[MAX_HANDLE_LEN];
 	memcpy(sender_name, packet + index, sender_len);
 	sender_name[sender_len] = '\0';
 	index += sender_len;
@@ -149,16 +205,10 @@ int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table) 
 	int dest_len = packet[index++];
 
 	//get destination name and make a string
-	uint8_t dest_name[MAX_HANDLE_LEN];
+	char dest_name[MAX_HANDLE_LEN];
 	memcpy(dest_name, packet + index, dest_len);
 	dest_name[dest_len] = '\0';
 	index += dest_len;
-
-	//now get the text msg
-	char *txt_message = (char *)(packet + index);
-	// printf("sender: %s\n", sender_name);
-    // printf("dest: %s\n", dest_name);
-    // printf("text: %s\n", txt_message);
 
 	int dest_index = 0; 
 	if ((dest_index = lookup_name(h_table, (char *)dest_name)) < 0) {
@@ -172,7 +222,7 @@ int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table) 
 	//send to the proper client
 
 	if (sendPDU(dst_socket, packet, packetLen) < 0) {
-		fprintf(stderr, "message failed to send\n");
+		fprintf(stderr, "message failed to send for message\n");
 		return -1; 
 	}
 
