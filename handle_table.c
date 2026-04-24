@@ -169,6 +169,10 @@ char *get_handle_by_index(handle_table *h_table, int index) {
     return h_table->entries[index].handle_name;
 }
 
+int get_socket_by_index(handle_table *h_table, int index) {
+    return h_table->entries[index].socket_num;
+}
+
 void print_handle_table(handle_table *h_table) {
     int i = 0; 
     for (i = 0; i < h_table->size; i++) {

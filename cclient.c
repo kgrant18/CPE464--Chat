@@ -1,5 +1,5 @@
 /******************************************************************************
-* myClient.c
+* cclient.c
 *
 * Writen by Prof. Smith, updated Jan 2023
 * Use at your own risk.  
@@ -28,14 +28,14 @@
 #include "pollLib.h"
 
 #define MAXBUF 1024
-#define MAXMSG 1400
+#define PACKET_MAX 1400
 #define MAX_HANDLE_LEN 101
 #define DEBUG_FLAG 1
 
-void sendToServer(int socketNum);
 int readFromStdin(uint8_t * buffer);
 void checkArgs(int argc, char * argv[]);
 int sendHandleName(int socketNum, char *handle_name);
+int blockUntilFlagReceived(int socketNum, char *handle_name);
 int clientControl(int socketNum, char *handle_name);
 int processMessage(int socketNum, uint8_t *buffer, char *handle_name);
 int createMessagePacket(uint8_t *buffer, char *sender, char *destination, char *txt_message);
@@ -46,6 +46,10 @@ int parseMulticastPacket(uint8_t *packet);
 int processListHandles(int socketNum, uint8_t *buffer, char *handle_name);
 void printNumHandles(uint8_t *packet);
 void printHandleNames(uint8_t *packet);
+int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name);
+int createBroadcastPacket(uint8_t *bPacket, char *sender, char *message);
+void parseBroadcastPacket(uint8_t *packet);
+void printDollar(void);
 
 int main(int argc, char * argv[])
 {
@@ -57,13 +61,48 @@ int main(int argc, char * argv[])
 	socketNum = tcpClientSetup(argv[2], argv[3], DEBUG_FLAG);
 
 	char *handle_name = argv[1]; 
-	sendHandleName(socketNum, handle_name);
+	if ((sendHandleName(socketNum, handle_name)) < 0) {
+		return -1;
+	}
+
+	if (blockUntilFlagReceived(socketNum, handle_name) < 0) {
+		return -1; 
+	}
 
 	clientControl(socketNum, handle_name);
 	
 	close(socketNum);
 	
 	return 0;
+}
+
+int blockUntilFlagReceived(int socketNum, char *handle_name) {
+	uint8_t buffer[MAXBUF];
+
+	int bytes_recv = recvPDU(socketNum, buffer, sizeof(buffer));
+	if (bytes_recv < 0) {
+		fprintf(stderr, "flag2/3 recvPDU failed\n");
+		return -1; 
+	}
+	else if (bytes_recv == 0) {
+		printf("Server terminated\n");
+		exit(1); 
+	}
+
+	int flag = buffer[0]; 
+
+	if (flag == 2) {
+		return 0;
+	}
+
+	else if (flag == 3) {
+		printf("Handle already in use: %s\n", handle_name);
+		return -1; 
+	}
+	else {
+		fprintf(stderr, "Expected flag 2 or flag 3\n");
+		return -1; 
+	}
 }
 
 int clientControl(int socketNum, char *handle_name) {
@@ -85,10 +124,11 @@ int clientControl(int socketNum, char *handle_name) {
 
 		if (poll_socket == STDIN_FILENO) {
 			//STDIN
+			int print_dollar = 1; 
+			
 			uint8_t buffer[MAXBUF];
-			int sendLen = 0; 
 
-			sendLen = readFromStdin(buffer); 
+			readFromStdin(buffer); 
 			if (buffer[0] == '%' && (buffer[1] == 'M' || buffer[1] == 'm')) {
 				//send message to one handle
 				processMessage(socketNum, buffer, handle_name); 
@@ -99,11 +139,15 @@ int clientControl(int socketNum, char *handle_name) {
 			}
 			else if (buffer[0] == '%' && (buffer[1] == 'L' || buffer[1] == 'l')) {
 				processListHandles(socketNum, buffer, handle_name);
+				print_dollar = 0;
+			}
+			else if (buffer[0] == '%' && (buffer[1] == 'B' || buffer[1] == 'b')) {
+				processBroadcast(socketNum, buffer, handle_name); 
 			}
 			
-			printf("$: ");
-			fflush(stdout); 
-
+			if (print_dollar == 1) {
+				printDollar(); 
+			}
 		}
 
 		else {
@@ -118,34 +162,123 @@ int clientControl(int socketNum, char *handle_name) {
 			
 			if (messageLen > 0) {
 				int flag = dataBuffer[0]; 
-				if (flag == 5) {
+				
+				if (flag == 4) {
+					//broadcast 
+					parseBroadcastPacket(dataBuffer);
+					printDollar(); 
+				}
+
+				else if (flag == 5) {
+					//regular message
 					parseMessagePacket(dataBuffer); 
-					printf("$: ");
-					fflush(stdout); 
+					printDollar(); 
 				}
 				else if (flag == 6) {
+					//multicast
 					parseMulticastPacket(dataBuffer);
-					printf("$: ");
-					fflush(stdout); 
+					printDollar(); 
+				}
+				else if (flag == 7) {
+					//error paccket
+					printf("\nAn unknown handle was entered\n");
+					printDollar(); 
 				}
 				else if (flag == 11) {
+					//received num handles for %l
 					printNumHandles(dataBuffer);
 				}
 				else if (flag == 12) {
+					//print each handle hame on %l
 					printHandleNames(dataBuffer);
 				}
-
-
+				else if (flag == 13) {
+					//%l is finished
+					printDollar(); 
+				}	
 			}
+
 			else {
 				printf("Server terminated\n");
 				exit(1);
 			}
-
 		}
 	}
 
 	return 0; 
+}
+
+void parseBroadcastPacket(uint8_t *packet) {
+	/**
+	 * Display the broadcast message
+	 */
+
+	 //bypass type
+	 int index = 1;
+	 
+	 //sender length
+	 int sender_len = packet[index++];
+
+	 //sender name
+	 uint8_t sender_name[MAX_HANDLE_LEN];
+	 memcpy(sender_name, packet + index, sender_len);
+	 sender_name[sender_len] = '\0';
+	 index += sender_len; 
+
+	 char *txt_message = (char *)(packet + index);
+	 
+	 printf("\n%s: %s\n", sender_name, txt_message);
+	
+}
+
+int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name) {
+	//tokenize the buffer to extract message
+	char *command = strtok((char *)buffer, " ");
+	if (command == NULL) {
+		fprintf(stderr, "format %%B [message]\n");
+		return -1; 
+	}
+
+	char *message = strtok(NULL, "");
+	if (message == NULL) {
+		fprintf(stderr, "format %%B [message]\n");
+		return -1; 
+	}
+
+	uint8_t bPacket[PACKET_MAX];
+	int num_bytes = 0; 
+	if ((num_bytes = createBroadcastPacket(bPacket, handle_name, message)) < 0) {
+		fprintf(stderr, "failed to make broadcast packet\n");
+		return -1;
+	} 
+
+	int sent_bytes = sendPDU(socketNum, bPacket, num_bytes); 
+	if (sent_bytes < 0) {
+		fprintf(stderr, "failed to send broadcast packet\n");
+		return -1;
+	}
+
+	return sent_bytes; 
+}
+
+int createBroadcastPacket(uint8_t *bPacket, char *sender, char *message) {
+	int index = 0; 
+	
+	//flag = 4 for broadcast
+	bPacket[index++] = 4; 
+
+	//1 byte for length of sender
+	bPacket[index++] = strlen(sender);
+
+	//sender handle
+	memcpy(bPacket + index, sender, strlen(sender));
+	index += strlen(sender);
+
+	//text message (null terminated)
+	memcpy(bPacket + index, message, strlen(message) + 1);
+	index += (strlen(message) + 1);
+
+	return index;
 }
 
 void printHandleNames(uint8_t *packet) {
@@ -171,7 +304,7 @@ void printNumHandles(uint8_t *packet) {
 	//convert to host order
 	int num_handles_ho = ntohl(num_handles);
 
-	printf("\nNumber of clients: %d\n", num_handles_ho);
+	printf("Number of clients: %d\n", num_handles_ho);
 	
 }
 
@@ -181,7 +314,7 @@ int processListHandles(int socketNum, uint8_t *buffer, char *handle_name) {
 	buffer[0] = 10;  
 
 	//only the flag is needed in format to know what is being requested
-	int sent_bytes = sendPDU(socketNum, buffer, sizeof(buffer));
+	int sent_bytes = sendPDU(socketNum, buffer, 1);
 	if (sent_bytes < 0) {
 		fprintf(stderr, "sendPDU for listing handles");
 		return -1;
@@ -231,13 +364,13 @@ int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
 	//tokenize the buffer to extract destination handles and text message
 	char *command = strtok((char *)buffer, " ");
 	if (command == NULL) {
-		fprintf(stderr, "format: [cmd] [num_handles] [dest_handles] [txt_message]\n");
+		fprintf(stderr, "format: %%C [num_handles] [dest_handles] [txt_message]\n");
 		return -1; 
 	}
 
 	char *numHandles = strtok(NULL, " ");
 	if (numHandles == NULL) {
-		fprintf(stderr, "format: [cmd] [num_handles] [dest_handles] [txt_message]\n");
+		fprintf(stderr, "format: %%C [num_handles] [dest_handles] [txt_message]\n");
 		return -1; 
 	}
 
@@ -256,7 +389,7 @@ int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
 	for (i = 0; i < num_handles; i++) {
 		dest_handles[i] = strtok(NULL, " ");
 		if (dest_handles[i] == NULL) {
-			fprintf(stderr, "number of handles must be between 2 and 9\n");
+			fprintf(stderr, "dest_handle[i] is NULL\n");
 			return -1;
 		}
 	}
@@ -412,7 +545,7 @@ int processMessage(int socketNum, uint8_t *buffer, char *handle_name) {
 		return -1;
 	}
 
-	uint8_t message[MAXMSG];
+	uint8_t message[PACKET_MAX];
 	int msg_pkt_bytes = 0; 
 	if ((msg_pkt_bytes = createMessagePacket(message, handle_name, dest_handle, txt_message)) < 0) {
 		fprintf(stderr, "error creating message packet\n");
@@ -448,45 +581,20 @@ int sendHandleName(int socketNum, char *handle_name) {
 	//send the data to server
 	int bytes_sent = sendPDU(socketNum, buffer, handleLen + 2);
 	if (bytes_sent < 0) {
-		perror("send call");
+		fprintf(stderr, "send handle name failed\n");
 		exit(-1); 
 	}
 
 	return bytes_sent; 
 }
 
-
-
-
-
-
-void sendToServer(int socketNum)
-{
-	uint8_t buffer[MAXBUF];   //data buffer
-	int sendLen = 0;        //amount of data to send
-	int sent = 0;            //actual amount of data sent/* get the data and send it   */
-	int recvBytes = 0;
-	
-	sendLen = readFromStdin(buffer);
-	printf("read: %s string len: %d (including null)\n", buffer, sendLen);
-	
-	sent =  safeSend(socketNum, buffer, sendLen, 0);
-	if (sent < 0)
-	{
-		perror("send call");
-		exit(-1);
-	}
-
-	printf("Socket:%d: Sent, Length: %d msg: %s\n", socketNum, sent, buffer);
-	
-	// just for debugging, recv a message from the server to prove it works.
-	recvBytes = safeRecv(socketNum, buffer, MAXBUF, 0);
-	printf("Socket %d: Byte recv: %d message: %s\n", socketNum, recvBytes, buffer);
-	
+void printDollar(void) {
+	printf("$: ");
+	fflush(stdout);
 }
 
-int readFromStdin(uint8_t *buffer)
-{
+
+int readFromStdin(uint8_t *buffer) {
 	char aChar = 0;
 	int inputLen = 0;        
 	
@@ -509,8 +617,7 @@ int readFromStdin(uint8_t *buffer)
 	return inputLen;
 }
 
-void checkArgs(int argc, char * argv[])
-{
+void checkArgs(int argc, char * argv[]) {
 	/* check command line arguments  */
 	if (argc != 4)
 	{

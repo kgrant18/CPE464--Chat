@@ -1,5 +1,5 @@
 /******************************************************************************
-* myServer.c
+* server.c
 * 
 * Writen by Prof. Smith, updated Jan 2023
 * Use at your own risk.  
@@ -43,8 +43,10 @@ void processClient(int clientSocket, handle_table *h_table);
 void callFunctionBasedOnFlag(int clientSocket, uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag);
 int serverProcessMessage(uint8_t *packet, int packetLen, handle_table *h_table);
 int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table);
+int serverSendFlag7Packet(int clientSocket, uint8_t *flag7_packet, char *handle_name);
 int serverSendFlag11Packet(int clientSocket, uint8_t *flag11_packet, int num_handles);
 int serverSendFlag12Packet(int clientSocket, char *handle_name);
+int broadcastToAllHandles(int clientSocket, uint8_t *packet, int packetLen, handle_table *h_table);
 
 int main(int argc, char *argv[])
 {
@@ -97,7 +99,7 @@ int serverControl(int mainServerSocket, handle_table *h_table) {
 
 void processClient(int clientSocket, handle_table *h_table) {
 
-	uint8_t dataBuffer[MAXBUF];
+	uint8_t dataBuffer[MAXMSG];
 	int messageLen = 0; 
 
 	//receive data that client sent
@@ -126,7 +128,10 @@ void processClient(int clientSocket, handle_table *h_table) {
 }
 
 void callFunctionBasedOnFlag(int clientSocket, uint8_t *dataBuffer, int dataLen, handle_table *h_table, int flag) {
-	if (flag == 5) {
+	if (flag == 4) {
+		broadcastToAllHandles(clientSocket, dataBuffer, dataLen, h_table);
+	} 
+	else if (flag == 5) {
 		//message from client
 		serverProcessMessage(dataBuffer, dataLen, h_table);
 	}
@@ -146,7 +151,34 @@ void callFunctionBasedOnFlag(int clientSocket, uint8_t *dataBuffer, int dataLen,
 			char *handle_name = get_handle_by_index(h_table, i);	
 			serverSendFlag12Packet(clientSocket, handle_name);
 		}
+
+		//send flag = 13 to indicate done with %l 
+		uint8_t flag13_packet[1]; 
+		flag13_packet[0] = 13;
+		sendPDU(clientSocket, flag13_packet, 3);
 	}
+}
+
+int broadcastToAllHandles(int clientSocket, uint8_t *packet, int packetLen, handle_table *h_table) {
+
+	int num_handles = get_num_handles(h_table); 
+
+	int i = 0; 
+	for (i = 0; i < num_handles; i++) {
+		int dest_socket = get_socket_by_index(h_table, i); 
+		//don't send to the sender
+		if (dest_socket == clientSocket) {
+			continue; 
+		}
+
+		if (sendPDU(dest_socket, packet, packetLen) < 0) {
+			fprintf(stderr, "broadcat sendPDU failed\n");
+			return -1; 
+		}
+
+	}
+
+	return 0; 
 }
 
 int serverSendFlag12Packet(int clientSocket, char *handle_name) {
@@ -158,7 +190,7 @@ int serverSendFlag12Packet(int clientSocket, char *handle_name) {
 	//next byte is length of handle
 	flag12_packet[1] = strlen(handle_name);
 
-	//put name into buffer
+	//put name into packet
 	memcpy(flag12_packet + 2, handle_name, strlen(handle_name));
 
 	int bytes_sent = sendPDU(clientSocket, flag12_packet, strlen(handle_name) + 2);
@@ -190,6 +222,32 @@ int serverSendFlag11Packet(int clientSocket, uint8_t *flag11_packet, int num_han
 	}
 
 	return send_len;
+}
+
+int serverSendFlag7Packet(int clientSocket, uint8_t *flag7_packet, char *handle_name) {
+	/**
+	 * Error packet- if destination handle in a messsags does not exist
+	 */
+	
+	int index = 0; 
+	
+	//flag = 7 for error packet 
+	flag7_packet[index++] = 7; 
+
+	//len of dest handle
+	flag7_packet[index++] = strlen(handle_name); 
+
+	//dest handle name
+	memcpy(flag7_packet + index, handle_name, strlen(handle_name)); 
+	index += strlen(handle_name); 
+
+	int sent_bytes = sendPDU(clientSocket, flag7_packet, index);
+	if (sent_bytes < 0) {
+		fprintf(stderr, "error sending flag7 packet\n");
+		return -1; 
+	}
+
+	return sent_bytes;
 }
 
 int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table) {
@@ -227,6 +285,9 @@ int serverProcessMulticast(uint8_t *packet, int packetLen, handle_table *h_table
 			int sender_index = lookup_name(h_table, sender_name);
 			if (sender_index >= 0) {
 				//send invalid message back to caller (flag 7)!!
+				uint8_t flag7_packet[MAXBUF];
+				int sender_socket = get_socket_by_index(h_table, sender_index); 
+				serverSendFlag7Packet(sender_socket, flag7_packet, sender_name);
 				return -1; 
 			}
 		}
@@ -304,28 +365,28 @@ void addNewSocket(int mainServerSocket, handle_table *h_table) {
 }
 
 int receive_handle_name(int clientSocket, handle_table *h_table) {
-	uint8_t buffer[MAXMSG];
+	uint8_t buffer[MAXBUF];
 
 	//receive from client
 	int bytes_recv = recvPDU(clientSocket, buffer, sizeof(buffer));
 	if (bytes_recv < 0) {
-		fprintf(stderr, "recvPDU failed");
+		fprintf(stderr, "recvPDU failed\n");
 		return -1;
 	} 
 	else if (bytes_recv == 0) {
-		fprintf(stderr, "client's connection closed");
+		fprintf(stderr, "client's connection closed\n");
 		return -1; 
 	}
 
 	//check that flag is 1
 	if (buffer[0] != 1) {
-		fprintf(stderr, "flag should be 1 here");
+		fprintf(stderr, "flag should be 1 here\n");
 		return -1; 
 	}
 
 	uint8_t handleLen = buffer[1]; 
 	if (handleLen > 100) {
-		fprintf(stderr, "handle len should not be more than 100 chars");
+		fprintf(stderr, "handle len should not be more than 100 chars\n");
 		return -1; 
 	}
 
@@ -337,42 +398,27 @@ int receive_handle_name(int clientSocket, handle_table *h_table) {
 
 	//add to the handle table
 	if (add_handle(h_table, handle_name, clientSocket) < 0) {
-		return -1;
+		//if name taken, send flag3 packet to client
+		uint8_t flag3_packet[1];
+		flag3_packet[0] = 3;
+
+		if (sendPDU(clientSocket, flag3_packet, 1) < 0) {
+			fprintf(stderr, "failed to send flag3 packet\n");
+			return -1; 
+		}
+		return -1; 
+	}
+
+	//send flag2 packet to client confirming good handle
+	uint8_t flag2_packet[1]; 
+	flag2_packet[0] = 2; 
+	if (sendPDU(clientSocket, flag2_packet, 1) < 0) {
+		fprintf(stderr, "failed to send flag2 packet\n");
+		return -1; 
 	}
 
 	return 0; 
 }
-
-
-
-void recvFromClient(int clientSocket)
-{
-	uint8_t dataBuffer[MAXBUF];
-	int messageLen = 0;
-	
-	//now get the data from the client_socket
-	if ((messageLen = safeRecv(clientSocket, dataBuffer, MAXBUF, 0)) < 0)
-	{
-		perror("recv call");
-		exit(-1);
-	}
-
-	if (messageLen > 0)
-	{
-		printf("Socket %d: Message received, length: %d Data: %s\n", clientSocket, messageLen, dataBuffer);
-		
-		// send it back to client (just to test sending is working... e.g. debugging)
-		messageLen = safeSend(clientSocket, dataBuffer, messageLen, 0);
-		printf("Socket %d: msg sent: %d bytes, text: %s\n", clientSocket, messageLen, dataBuffer);
-	}
-	else
-	{
-		printf("Socket %d: Connection closed by other side\n", clientSocket);
-	}
-
-}
-
-
 
 int checkArgs(int argc, char *argv[])
 {
