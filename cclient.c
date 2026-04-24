@@ -108,6 +108,10 @@ int blockUntilFlagReceived(int socketNum, char *handle_name) {
 }
 
 int clientControl(int socketNum, char *handle_name) {
+	/**
+	 * The main control flow of the program by either reading from STDIN or processing a sent message
+	 */
+
 	setupPollSet(); 
 	//add STDIN
 	addToPollSet(STDIN_FILENO);
@@ -140,14 +144,17 @@ int clientControl(int socketNum, char *handle_name) {
 				processMulticast(socketNum, buffer, handle_name); 
 			}
 			else if (buffer[0] == '%' && (buffer[1] == 'L' || buffer[1] == 'l')) {
+				//list all handles in the handle table
 				processListHandles(socketNum, buffer, handle_name);
 				print_dollar = 0;
 			}
 			else if (buffer[0] == '%' && (buffer[1] == 'B' || buffer[1] == 'b')) {
+				//broadcast to all besides sender
 				processBroadcast(socketNum, buffer, handle_name); 
 			}
 			
 			if (print_dollar == 1) {
+				//print for all except %l
 				printDollar(); 
 			}
 		}
@@ -157,6 +164,7 @@ int clientControl(int socketNum, char *handle_name) {
 			uint8_t dataBuffer[MAXBUF]; 
 			int messageLen = 0; 
 
+			//receive message
 			if ((messageLen = recvPDU(socketNum, dataBuffer, MAXBUF)) < 0) {
 				perror("recv call");
 				exit(-1);
@@ -232,6 +240,10 @@ void parseBroadcastPacket(uint8_t *packet) {
 }
 
 int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name) {
+	/**
+	 * Extract the fields from STDIN, create the packets, then send
+	 */
+	
 	//tokenize the buffer to extract message
 	char *command = strtok((char *)buffer, " ");
 	if (command == NULL) {
@@ -249,14 +261,15 @@ int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name) {
 	//ceiling divisin to round up 
 	int num_packets = (text_length + 198) / MAX_MSG_LEN;
 
-	//send multiple packets if txt_msg > 199
 	int sent_bytes = 0;
 	int offset = 0; 
 	int i = 0;
 	for (i = 0; i < num_packets; i++) {
+		//send multiple packets if txt_msg > 199
 		char new_txt_msg[200];
 		get200ByteMessage(new_txt_msg, message, offset);
 
+		//create packet
 		uint8_t bPacket[PACKET_MAX];
 		int num_bytes = 0; 
 		if ((num_bytes = createBroadcastPacket(bPacket, handle_name, new_txt_msg)) < 0) {
@@ -264,6 +277,7 @@ int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name) {
 			return -1;
 		} 
 
+		//send packet
 		sent_bytes = sendPDU(socketNum, bPacket, num_bytes); 
 		if (sent_bytes < 0) {
 			fprintf(stderr, "failed to send broadcast packet\n");
@@ -277,6 +291,10 @@ int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name) {
 }
 
 int createBroadcastPacket(uint8_t *bPacket, char *sender, char *message) {
+	/**
+	 * Create the broadcat packet based on the specifications
+	 */
+	
 	int index = 0; 
 	
 	//flag = 4 for broadcast
@@ -297,6 +315,9 @@ int createBroadcastPacket(uint8_t *bPacket, char *sender, char *message) {
 }
 
 void printHandleNames(uint8_t *packet) {
+	/**
+	 * Print a handle name for %l
+	 */
 
 	//skip the flag byte
 	int index = 1; 
@@ -311,7 +332,10 @@ void printHandleNames(uint8_t *packet) {
 }
 
 void printNumHandles(uint8_t *packet) {
-	
+	/**
+	 * Print the number of handles for %l
+	 */
+
 	//skip the flag byte
 	uint32_t num_handles = 0;
 	memcpy(&num_handles, packet + 1, 4);
@@ -324,6 +348,9 @@ void printNumHandles(uint8_t *packet) {
 }
 
 int processListHandles(int socketNum, uint8_t *buffer, char *handle_name) {
+	/**
+	 * create packet for when client wants a list of active handles
+	 */
 
 	//flag = 10 to tell server it wants a list of handles
 	buffer[0] = 10;  
@@ -376,6 +403,10 @@ int parseMulticastPacket(uint8_t *packet) {
 }
 
 int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
+	/**
+	 * Extract the data from STDIN, create the multicat packet, and send away
+	 */
+	
 	//tokenize the buffer to extract destination handles and text message
 	char *command = strtok((char *)buffer, " ");
 	if (command == NULL) {
@@ -389,9 +420,10 @@ int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
 		return -1; 
 	}
 
+	//convert to integer
 	int num_handles = atoi(numHandles);
 	
-	//num handles is between 2 and 9
+	//num handles must be between 2 and 9
 	if (num_handles < 2 || num_handles > 9) {
 		fprintf(stderr, "number of handles must be between 2 and 9\n");
 		return -1; 
@@ -420,10 +452,11 @@ int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
 	//ceiling divisin to round up 
 	int num_packets = (text_length + 198) / MAX_MSG_LEN;
 
-	//send multiple packets if txt_msg > 199
+	
 	int bytes_sent = 0;
 	int offset = 0; 
 	for (i = 0; i < num_packets; i++) {
+		//send multiple packets if txt_msg > 199
 		char new_txt_msg[200];
 		get200ByteMessage(new_txt_msg, txt_message, offset);
 
@@ -449,6 +482,10 @@ int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
 }
 
 int createMulticastPacket(uint8_t *buffer, int num_handles, char *sender, char *destination[], char *txt_msg) {
+	/**
+	 * Create a multicast packet based on the specifications
+	 */
+	
 	int index = 0; 
 
 	//flag = 6 for multicast
@@ -522,6 +559,9 @@ int parseMessagePacket(uint8_t *packet) {
 }
 
 int createMessagePacket(uint8_t *buffer, char *sender, char *destination, char *txt_message) {
+	/**
+	 * Create a normal message packet based on the specifications
+	 */
 
 	int index = 0; 
 
@@ -551,6 +591,10 @@ int createMessagePacket(uint8_t *buffer, char *sender, char *destination, char *
 }
 
 int processMessage(int socketNum, uint8_t *buffer, char *handle_name) {
+	/**
+	 * Extract necessary information from STDIN, package it, and send away
+	 */
+
 	//tokenize the buffer to extract destination handle and text message
 	char *command = strtok((char *)buffer, " ");
 	if (command == NULL) {
@@ -574,11 +618,12 @@ int processMessage(int socketNum, uint8_t *buffer, char *handle_name) {
 	//ceiling divisin to round up 
 	int num_packets = (text_length + 198) / MAX_MSG_LEN;
 
-	//send multiple packets if txt_msg > 199
+	
 	int sent_bytes = 0;
 	int offset = 0; 
 	int i = 0;
 	for (i = 0; i < num_packets; i++) {
+		//send multiple packets if txt_msg > 199
 		char new_txt_msg[200];
 		get200ByteMessage(new_txt_msg, txt_message, offset);
 	
@@ -602,6 +647,10 @@ int processMessage(int socketNum, uint8_t *buffer, char *handle_name) {
 }
 
 int sendHandleName(int socketNum, char *handle_name) {
+	/**
+	 * This function is called right when the client is being created to send the server it's name for management 
+	 */
+
 	uint8_t buffer[MAXBUF];
 	int handleLen = strlen(handle_name); 
 
@@ -628,6 +677,9 @@ int sendHandleName(int socketNum, char *handle_name) {
 }
 
 void get200ByteMessage(char *new_txt_msg, char *og_txt_msg, int offset) {
+	/**
+	 * Split messages into 200 byte chunks when neded
+	 */
 	int bytes_remaining = strlen(og_txt_msg) - offset;
 	int copy_len = 0; 
 
@@ -649,6 +701,10 @@ void get200ByteMessage(char *new_txt_msg, char *og_txt_msg, int offset) {
 }
 
 void printDollar(void) {
+	/**
+	 * Client formatting 
+	 */
+	
 	printf("$: ");
 	fflush(stdout);
 }

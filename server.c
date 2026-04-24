@@ -87,6 +87,9 @@ void serverControl(int mainServerSocket, handle_table *h_table) {
 }
 
 void processClient(int clientSocket, handle_table *h_table) {
+	/**
+	 * Processes the data sent from the client
+	 */
 
 	uint8_t dataBuffer[MAXMSG];
 	int messageLen = 0; 
@@ -120,6 +123,7 @@ void callFunctionBasedOnFlag(int clientSocket, uint8_t *dataBuffer, int dataLen,
 	/**
 	 * Based on the flag, the server will call a function accordingly
 	 */
+	
 	if (flag == 1) {
 		processFlag1Packet(clientSocket, dataBuffer, h_table);
 	}
@@ -370,7 +374,7 @@ void addNewSocket(int mainServerSocket, handle_table *h_table) {
 
 	clientSocket = tcpAccept(mainServerSocket, DEBUG_FLAG);
 	addToPollSet(clientSocket);
-	
+
 	//print_handle_table(h_table);
 
 }

@@ -1,0 +1,5 @@
+Kevin Grant (lab: Wednesday at 12pm)
+
+# Notes
+
+Given the extra motive for extra credit by turning it in Friday 2/24, I have spent the past few days cranking out this program. I am satisfied with my outcome and believe that I have compeleted the assignment to most of its extent. There could be some edge cases that I might have missed, but for the most part, the funcationlity behaves as it should. I created a lot of helper functions (as you will see), for both the cclient and server processes, and I tried to document them as best as I could to explain my thought process. 
