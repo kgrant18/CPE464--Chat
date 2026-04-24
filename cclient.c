@@ -30,6 +30,7 @@
 #define MAXBUF 1024
 #define PACKET_MAX 1400
 #define MAX_HANDLE_LEN 101
+#define MAX_MSG_LEN 199
 #define DEBUG_FLAG 1
 
 int readFromStdin(uint8_t * buffer);
@@ -50,6 +51,7 @@ int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name);
 int createBroadcastPacket(uint8_t *bPacket, char *sender, char *message);
 void parseBroadcastPacket(uint8_t *packet);
 void printDollar(void);
+void get200ByteMessage(char *new_txt_msg, char *og_txt_msg, int offset);
 
 int main(int argc, char * argv[])
 {
@@ -85,7 +87,7 @@ int blockUntilFlagReceived(int socketNum, char *handle_name) {
 		return -1; 
 	}
 	else if (bytes_recv == 0) {
-		printf("Server terminated\n");
+		printf("Server Terminated\n");
 		exit(1); 
 	}
 
@@ -165,23 +167,20 @@ int clientControl(int socketNum, char *handle_name) {
 				
 				if (flag == 4) {
 					//broadcast 
-					parseBroadcastPacket(dataBuffer);
-					printDollar(); 
+					parseBroadcastPacket(dataBuffer); 
 				}
 
 				else if (flag == 5) {
 					//regular message
-					parseMessagePacket(dataBuffer); 
-					printDollar(); 
+					parseMessagePacket(dataBuffer);  
 				}
 				else if (flag == 6) {
 					//multicast
-					parseMulticastPacket(dataBuffer);
-					printDollar(); 
+					parseMulticastPacket(dataBuffer); 
 				}
 				else if (flag == 7) {
 					//error paccket
-					printf("\nAn unknown handle was entered\n");
+					printf("\rAn unknown handle was entered\n");
 					printDollar(); 
 				}
 				else if (flag == 11) {
@@ -199,7 +198,7 @@ int clientControl(int socketNum, char *handle_name) {
 			}
 
 			else {
-				printf("Server terminated\n");
+				printf("Server Terminated\n");
 				exit(1);
 			}
 		}
@@ -227,7 +226,8 @@ void parseBroadcastPacket(uint8_t *packet) {
 
 	 char *txt_message = (char *)(packet + index);
 	 
-	 printf("\n%s: %s\n", sender_name, txt_message);
+	 printf("\r%s: %s\n", sender_name, txt_message);
+	 printDollar();
 	
 }
 
@@ -241,21 +241,36 @@ int processBroadcast(int socketNum, uint8_t *buffer, char *handle_name) {
 
 	char *message = strtok(NULL, "");
 	if (message == NULL) {
-		fprintf(stderr, "format %%B [message]\n");
-		return -1; 
+		message = " ";
 	}
 
-	uint8_t bPacket[PACKET_MAX];
-	int num_bytes = 0; 
-	if ((num_bytes = createBroadcastPacket(bPacket, handle_name, message)) < 0) {
-		fprintf(stderr, "failed to make broadcast packet\n");
-		return -1;
-	} 
+	//calculate how many individual packets needs to be sent 
+	int text_length = strlen(message);
+	//ceiling divisin to round up 
+	int num_packets = (text_length + 198) / MAX_MSG_LEN;
 
-	int sent_bytes = sendPDU(socketNum, bPacket, num_bytes); 
-	if (sent_bytes < 0) {
-		fprintf(stderr, "failed to send broadcast packet\n");
-		return -1;
+	//send multiple packets if txt_msg > 199
+	int sent_bytes = 0;
+	int offset = 0; 
+	int i = 0;
+	for (i = 0; i < num_packets; i++) {
+		char new_txt_msg[200];
+		get200ByteMessage(new_txt_msg, message, offset);
+
+		uint8_t bPacket[PACKET_MAX];
+		int num_bytes = 0; 
+		if ((num_bytes = createBroadcastPacket(bPacket, handle_name, new_txt_msg)) < 0) {
+			fprintf(stderr, "failed to make broadcast packet\n");
+			return -1;
+		} 
+
+		sent_bytes = sendPDU(socketNum, bPacket, num_bytes); 
+		if (sent_bytes < 0) {
+			fprintf(stderr, "failed to send broadcast packet\n");
+			return -1;
+		}
+
+		offset += strlen(new_txt_msg); 
 	}
 
 	return sent_bytes; 
@@ -353,8 +368,8 @@ int parseMulticastPacket(uint8_t *packet) {
 	char *txt_message = (char *)(packet + index);
 	
 	//display  sent message
-	printf("\n%s: %s\n", sender_name, txt_message);
-
+	printf("\r%s: %s\n", sender_name, txt_message);
+	printDollar();
 	
 	 
 	return 0; 
@@ -397,23 +412,37 @@ int processMulticast(int socketNum, uint8_t *buffer, char *handle_name) {
 	//get text message
 	char *txt_message = strtok(NULL, ""); 
 	if (txt_message == NULL) {
-		fprintf(stderr, "format: [cmd] [num_handles] [dest_handles] [txt_message]\n");
-		return -1; 
+		txt_message = " ";
 	}
 
-	//create multicast packet
-	uint8_t multiPacket[MAXBUF];
-	int num_bytes = 0;
-	if ((num_bytes = createMulticastPacket(multiPacket, num_handles, handle_name, dest_handles, txt_message)) < 0) {
-		fprintf(stderr, "multicast packet creation failed\n");
-		return -1; 
-	} 
+	//calculate how many individual packets needs to be sent 
+	int text_length = strlen(txt_message);
+	//ceiling divisin to round up 
+	int num_packets = (text_length + 198) / MAX_MSG_LEN;
 
-	//send multicast packet
-	int bytes_sent = 0; 
-	if ((bytes_sent = sendPDU(socketNum, multiPacket, num_bytes)) < 0) {
-		fprintf(stderr, "sendPDU failed for multicast packet\n");
-		return -1; 
+	//send multiple packets if txt_msg > 199
+	int bytes_sent = 0;
+	int offset = 0; 
+	for (i = 0; i < num_packets; i++) {
+		char new_txt_msg[200];
+		get200ByteMessage(new_txt_msg, txt_message, offset);
+
+		//create multicast packet
+		uint8_t multiPacket[MAXBUF];
+		int num_bytes = 0;
+		if ((num_bytes = createMulticastPacket(multiPacket, num_handles, handle_name, dest_handles, new_txt_msg)) < 0) {
+			fprintf(stderr, "multicast packet creation failed\n");
+			return -1; 
+		} 
+
+		//send multicast packet
+		bytes_sent = 0; 
+		if ((bytes_sent = sendPDU(socketNum, multiPacket, num_bytes)) < 0) {
+			fprintf(stderr, "sendPDU failed for multicast packet\n");
+			return -1; 
+		}
+
+		offset += strlen(new_txt_msg);
 	}
 
 	return bytes_sent; 
@@ -486,7 +515,8 @@ int parseMessagePacket(uint8_t *packet) {
 	char *txt_message = (char *)(packet + index);
     
 	//display  sent message
-	printf("\n%s: %s\n", sender_name, txt_message);
+	printf("\r%s: %s\n", sender_name, txt_message);
+	printDollar();
 
 	return 0; 
 }
@@ -536,27 +566,36 @@ int processMessage(int socketNum, uint8_t *buffer, char *handle_name) {
 
 	char *txt_message = strtok(NULL, ""); 
 	if (txt_message == NULL) {
-		fprintf(stderr, "format: [cmd] [dest_handle] [txt_message]\n");
-		return -1; 
+		txt_message = " ";
 	}
 
-	if (strlen(txt_message) > 200) {
-		fprintf(stderr, "max message length is 200 bytes\n");
-		return -1;
-	}
+	//calculate how many individual packets needs to be sent 
+	int text_length = strlen(txt_message);
+	//ceiling divisin to round up 
+	int num_packets = (text_length + 198) / MAX_MSG_LEN;
 
-	uint8_t message[PACKET_MAX];
-	int msg_pkt_bytes = 0; 
-	if ((msg_pkt_bytes = createMessagePacket(message, handle_name, dest_handle, txt_message)) < 0) {
-		fprintf(stderr, "error creating message packet\n");
-		return -1; 
-	}
-
-	//send message PDU to client
+	//send multiple packets if txt_msg > 199
 	int sent_bytes = 0;
-	if ((sent_bytes = sendPDU(socketNum, message, msg_pkt_bytes)) < 0) {
-		fprintf(stderr, "sendPDU message packet\n");
-		return -1; 
+	int offset = 0; 
+	int i = 0;
+	for (i = 0; i < num_packets; i++) {
+		char new_txt_msg[200];
+		get200ByteMessage(new_txt_msg, txt_message, offset);
+	
+		uint8_t message[PACKET_MAX];
+		int msg_pkt_bytes = 0; 
+		if ((msg_pkt_bytes = createMessagePacket(message, handle_name, dest_handle, new_txt_msg)) < 0) {
+			fprintf(stderr, "error creating message packet\n");
+			return -1; 
+		}
+
+		//send message PDU to client
+		if ((sent_bytes = sendPDU(socketNum, message, msg_pkt_bytes)) < 0) {
+			fprintf(stderr, "sendPDU message packet\n");
+			return -1; 
+		}
+
+		offset += strlen(new_txt_msg);
 	}
 
 	return sent_bytes; 
@@ -586,6 +625,27 @@ int sendHandleName(int socketNum, char *handle_name) {
 	}
 
 	return bytes_sent; 
+}
+
+void get200ByteMessage(char *new_txt_msg, char *og_txt_msg, int offset) {
+	int bytes_remaining = strlen(og_txt_msg) - offset;
+	int copy_len = 0; 
+
+	//extract number of bytes to be copied
+	if (bytes_remaining > 199) {
+		copy_len = 199;
+	}
+	else {
+		copy_len = bytes_remaining; 
+	}
+
+	//avoid negatives
+	if (copy_len < 0) {
+		copy_len = 0;
+	}
+
+	memcpy(new_txt_msg, og_txt_msg + offset, copy_len);
+	new_txt_msg[copy_len] = '\0';
 }
 
 void printDollar(void) {
